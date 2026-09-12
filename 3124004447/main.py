@@ -41,26 +41,25 @@ def normalize_text(text: str) -> str:
 
 
 def longest_common_subsequence_length(left: str, right: str) -> int:
-    """使用二维动态规划计算两个字符串的最长公共子序列长度。
+    """使用滚动数组计算两个字符串的最长公共子序列长度。
 
     时间复杂度为 O(len(left) * len(right))，
-    空间复杂度为 O(len(left) * len(right))。
+    空间复杂度为 O(min(len(left), len(right)))。
     """
-    row_count = len(left) + 1
-    column_count = len(right) + 1
-    matrix = [[0] * column_count for _ in range(row_count)]
+    if len(left) < len(right):
+        left, right = right, left
 
-    for left_index, left_character in enumerate(left, start=1):
-        for right_index, right_character in enumerate(right, start=1):
+    previous = [0] * (len(right) + 1)
+    for left_character in left:
+        current = [0] * (len(right) + 1)
+        for index, right_character in enumerate(right, start=1):
             if left_character == right_character:
-                matrix[left_index][right_index] = matrix[left_index - 1][right_index - 1] + 1
+                current[index] = previous[index - 1] + 1
             else:
-                matrix[left_index][right_index] = max(
-                    matrix[left_index - 1][right_index],
-                    matrix[left_index][right_index - 1],
-                )
+                current[index] = max(previous[index], current[index - 1])
+        previous = current
 
-    return matrix[-1][-1]
+    return previous[-1]
 
 
 def calculate_similarity(original_text: str, suspect_text: str) -> float:
