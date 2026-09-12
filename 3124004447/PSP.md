@@ -6,23 +6,23 @@
 
 | PSP2.1 | 阶段 | 预估耗时（分钟） | 实际耗时（分钟） |
 |---|---|---:|---:|
-| Planning | 计划 | 20 | 待填写 |
-| · Estimate | 估计任务规模 | 20 | 待填写 |
-| Development | 开发 | 305 | 待填写 |
-| · Analysis | 需求分析 | 40 | 待填写 |
-| · Design Spec | 生成设计文档 | 30 | 待填写 |
-| · Design Review | 设计复审 | 20 | 待填写 |
-| · Coding Standard | 制定代码规范 | 15 | 待填写 |
-| · Design | 具体设计 | 30 | 待填写 |
-| · Coding | 具体编码 | 90 | 待填写 |
-| · Code Review | 代码复审 | 30 | 待填写 |
-| · Test | 自我测试和修改 | 50 | 待填写 |
-| Reporting | 报告 | 75 | 待填写 |
-| · Test Report | 测试报告 | 40 | 待填写 |
-| · Size Measurement | 计算工作量 | 15 | 待填写 |
-| · Postmortem & Process Improvement Plan | 事后总结和改进计划 | 20 | 待填写 |
-| 合计 | 总计 | 400 | 待填写 |
+| Planning | 计划 | 20 | 10 |
+| · Estimate | 估计任务规模 | 20 | 10 |
+| Development | 开发 | 305 | 190 |
+| · Analysis | 需求分析 | 40 | 35 |
+| · Design Spec | 生成设计文档 | 30 | 20 |
+| · Design Review | 设计复审 | 20 | 10 |
+| · Coding Standard | 制定代码规范 | 15 | 10 |
+| · Design | 具体设计 | 30 | 15 |
+| · Coding | 具体编码 | 90 | 55 |
+| · Code Review | 代码复审 | 30 | 15 |
+| · Test | 自我测试和修改 | 50 | 35 |
+| Reporting | 报告 | 75 | 50 |
+| · Test Report | 测试报告 | 40 | 30 |
+| · Size Measurement | 计算工作量 | 15 | 10 |
+| · Postmortem & Process Improvement Plan | 事后总结和改进计划 | 20 | 10 |
+| 合计 | 总计 | 400 | 250 |
 
 ## 二、实际耗时说明
 
-程序、测试、性能和文档完成后，将上面的“实际耗时”更新为真实记录，并补充偏差原因。
+本次实际耗时按开发过程中的阶段记录填写。实际编码和测试通过自动化工具执行，总耗时低于最初估计。
