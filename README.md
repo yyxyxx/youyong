@@ -17,4 +17,4 @@ cd 3124004447
 python main.py <原文文件绝对路径> <抄袭版论文绝对路径> <答案文件绝对路径>
 ```
 
-项目只依赖 Python 标准库。
+程序支持普通文本和 GitHub blob HTML，运行时只依赖 Python 标准库。

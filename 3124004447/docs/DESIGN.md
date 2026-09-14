@@ -8,11 +8,15 @@
 | 名称 | 职责 |
 |---|---|
 | `ArgumentError` | 表示命令行参数错误 |
-| `InputFileError` | 表示输入文件读取或解码错误 |
+| `InputFileError` | 表示输入文件读取、解码或 HTML 解析错误 |
 | `OutputFileError` | 表示答案文件写入错误 |
-| `normalize_text` | 执行 Unicode 规范化、英文大小写统一和空白过滤 |
-| `longest_common_subsequence_length` | 计算 LCS 长度 |
-| `calculate_similarity` | 根据 LCS 计算重复率 |
+| `DocumentHTMLParser` | 从普通 HTML 或 GitHub blob 页面提取正文 |
+| `looks_like_html` | 判断输入是否为 HTML |
+| `extract_document_text` | 返回纯文本或 HTML 中的论文正文 |
+| `normalize_text` | 统一字符宽度和英文大小写，去除标点和空白 |
+| `iter_ngrams` | 依次生成 1/2/3-gram 字符片段 |
+| `cosine_similarity` | 计算两个词频向量的余弦相似度 |
+| `calculate_similarity` | 计算最终加权重重复率 |
 | `read_text` | 读取 UTF-8 或 GB18030 文本 |
 | `write_score` | 将两位小数结果写入答案文件 |
 | `parse_arguments` | 校验三个命令行路径 |
@@ -25,37 +29,52 @@ flowchart TD
     A[接收三个命令行参数] --> B{参数是否合法}
     B -- 否 --> C[输出参数错误并返回 2]
     B -- 是 --> D[读取原文和抄袭版论文]
-    D --> E{文件是否可读和解码}
-    E -- 否 --> F[输出文件错误并返回 3]
-    E -- 是 --> G[Unicode 规范化并过滤空白]
-    G --> H[使用滚动数组计算 LCS 长度]
-    H --> I[计算相似度]
-    I --> J[保留两位小数写入答案文件]
+    D --> E{是否为 HTML}
+    E -- 是 --> F[提取 GitHub 代码行或可见正文]
+    E -- 否 --> G[保留原始文本]
+    F --> H[Unicode 规范化并过滤字符]
+    G --> H
+    H --> I[构造 1/2/3-gram 词频向量]
+    I --> J[计算三个余弦相似度]
+    J --> K[按 0.35 / 0.45 / 0.20 加权]
+    K --> L[保留两位小数写入答案文件]
 ```
 
-## 三、相似度公式
+## 三、HTML 正文提取
+
+题目样式中包含 GitHub blob 页面。真正的论文内容位于带有
+`blob-code`、`js-file-line` 或 `id="LC..."` 的行中。
+
+`DocumentHTMLParser` 的行为：
+
+- 优先收集 GitHub blob 的代码行。
+- 对普通 HTML 收集可见文本。
+- 跳过 `script`、`style`、`noscript` 中的内容。
+- 忽略 `br`、`img`、`meta` 等不影响正文的标签。
+- 如果文件中没有 GitHub 代码行，则回退到普通 HTML 可见文本。
+
+## 四、相似度算法
+
+文本规范化后，分别构造 1-gram、2-gram 和 3-gram 的频次向量，再计算余弦相似度。
 
 ```text
-similarity = 2 × LCS(original, suspect) / (len(original) + len(suspect))
+score = 0.35 × cosine(1-gram)
+      + 0.45 × cosine(2-gram)
+      + 0.20 × cosine(3-gram)
 ```
 
-该公式具有以下特点：
+权重设计原因：
 
-- 取值范围为 `[0, 1]`。
-- 两篇完全相同的文本结果为 `1.00`。
-- 没有公共字符的文本结果为 `0.00`。
-- 对插入、删除和替换具有稳定的惩罚效果。
-- 结果关于两个输入顺序对称。
+- 1-gram 对插入、删除和换序较稳定，但区分度较低。
+- 2-gram 能较好反映局部连续文本，作为主要特征。
+- 3-gram 对顺序更敏感，用于辅助区分高度相似文本。
 
-## 四、性能设计
+该方法不需要分词，也不依赖外部词典，时间复杂度接近线性，适合约一万字符
+的论文文本。
 
-LCS 使用两行滚动数组，而不是保存完整二维矩阵，空间复杂度由
-`O(m × n)` 降低为 `O(min(m, n))`。测试文本最大长度为 500，因此算法
-在时间和内存方面都有充足余量。
+## 五、边界规则
 
-## 五、关键取舍
-
-- 保留中文标点参与计算，使“原文修改标点”也能反映在结果中。
-- 忽略空白字符，避免换行和排版空格影响结果。
-- 英文大小写不敏感，全角字符先转换成标准形式。
-- 运行时不引入 `jieba`、`gensim` 等第三方依赖，减少安装和评测风险。
+- 两篇文本都为空时，重复率为 `1.00`。
+- 只有一篇为空时，重复率为 `0.00`。
+- 完全相同文本会被修正为严格的 `1.0`，避免浮点误差产生
+  `0.9999999999999999`。

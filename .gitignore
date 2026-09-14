@@ -8,3 +8,6 @@ venv/
 build/
 dist/
 *.egg-info/
+
+# 课程提供的本地样例压缩包，不提交到仓库
+/测试文本.zip

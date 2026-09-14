@@ -2,8 +2,8 @@
 
 ## 一、设计目标
 
-程序对可预期的参数、输入文件和输出文件错误进行处理，不让评测程序收到
-Python 堆栈或未处理异常。正常输入返回 `0`，参数错误返回 `2`，
+程序对可预期的参数、文件读取、HTML 解析和输出文件错误进行处理，不让评测
+程序收到 Python 堆栈或未处理异常。正常输入返回 `0`，参数错误返回 `2`，
 文件相关错误返回 `3`。
 
 ## 二、异常类型与测试
@@ -15,9 +15,18 @@ Python 堆栈或未处理异常。正常输入返回 `0`，参数错误返回 `2
 | `InputFileError` | 输入文件不存在 | 输出文件错误并返回 3 | `test_main_reports_missing_input` |
 | `InputFileError` | 文件不是有效的 UTF-8 或 GB18030 | 输出解码错误并返回 3 | `test_main_reports_undecodable_input` |
 | `InputFileError` | 操作系统拒绝读取文件 | 包装底层 `OSError` 并返回 3 | `test_read_text_reports_os_error` |
+| `InputFileError` | HTML 解析器发生异常 | 包装解析错误并返回 3 | `test_html_parse_error_is_wrapped` |
 | `OutputFileError` | 答案路径不可写或是目录 | 包装底层 `OSError` 并返回 3 | `test_main_reports_output_write_error` |
 
-## 三、空文本规则
+## 三、HTML 处理容错
+
+- 普通文本不会进入 HTML 解析器。
+- HTML 优先提取 GitHub blob 的代码行。
+- 普通 HTML 回退到可见文本。
+- `script`、`style` 和 `noscript` 内容不会参与计算。
+- HTML 解析失败时统一转换为 `InputFileError`，不会向评测程序输出堆栈。
+
+## 四、空文本规则
 
 - 原文和抄袭版都为空：相似度为 `1.00`。
 - 只有其中一篇为空：相似度为 `0.00`。
