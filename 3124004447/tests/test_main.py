@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
@@ -16,7 +17,7 @@ import main  # noqa: E402  pylint: disable=wrong-import-position
 
 
 class SimilarityTests(unittest.TestCase):
-    """计算模块的相似度测试。"""
+    """文本预处理、HTML 抽取和相似度算法测试。"""
 
     def test_empty_texts_are_identical(self) -> None:
         self.assertEqual(main.calculate_similarity("", ""), 1.0)
@@ -32,51 +33,100 @@ class SimilarityTests(unittest.TestCase):
     def test_completely_different_text_returns_zero(self) -> None:
         self.assertEqual(main.calculate_similarity("甲乙丙", "XYZ"), 0.0)
 
-    def test_assignment_sample_returns_expected_score(self) -> None:
+    def test_assignment_sample_has_medium_similarity(self) -> None:
         original = "今天是星期天，天气晴，今天晚上我要去看电影。"
         suspect = "今天是周天，天气晴朗，我晚上要去看电影。"
-        self.assertAlmostEqual(
-            main.calculate_similarity(original, suspect),
-            0.8095238095,
-            places=6,
-        )
+        score = main.calculate_similarity(original, suspect)
+        self.assertGreater(score, 0.60)
+        self.assertLess(score, 0.80)
 
-    def test_insertion_is_reflected(self) -> None:
-        self.assertAlmostEqual(
-            main.calculate_similarity("abc", "abxc"),
-            6.0 / 7.0,
-            places=6,
-        )
+    def test_insertion_keeps_partial_similarity(self) -> None:
+        score = main.calculate_similarity("abc", "abxc")
+        self.assertGreater(score, 0.40)
+        self.assertLess(score, 1.0)
 
-    def test_deletion_is_reflected(self) -> None:
-        self.assertAlmostEqual(
-            main.calculate_similarity("abxc", "abc"),
-            6.0 / 7.0,
-            places=6,
-        )
+    def test_deletion_keeps_partial_similarity(self) -> None:
+        score = main.calculate_similarity("abxc", "abc")
+        self.assertGreater(score, 0.40)
+        self.assertLess(score, 1.0)
 
-    def test_substitution_is_reflected(self) -> None:
-        self.assertAlmostEqual(
-            main.calculate_similarity("abcd", "abed"),
-            0.75,
-            places=6,
-        )
+    def test_substitution_keeps_partial_similarity(self) -> None:
+        score = main.calculate_similarity("abcd", "abed")
+        self.assertGreater(score, 0.30)
+        self.assertLess(score, 1.0)
 
-    def test_normalization_ignores_case_width_and_whitespace(self) -> None:
-        self.assertEqual(main.calculate_similarity("Ａ ＢＣ", "a\tbc"), 1.0)
+    def test_normalization_ignores_case_width_space_and_punctuation(self) -> None:
+        self.assertEqual(main.calculate_similarity("Ａ Ｂ，Ｃ。", "a\tbc"), 1.0)
 
-    def test_punctuation_is_counted(self) -> None:
-        self.assertAlmostEqual(
-            main.calculate_similarity("你好。", "你好"),
-            4.0 / 5.0,
-            places=6,
-        )
+    def test_ngram_generator_returns_expected_slices(self) -> None:
+        self.assertEqual(list(main.iter_ngrams("abcd", 2)), ["ab", "bc", "cd"])
 
-    def test_lcs_length_known_value(self) -> None:
-        self.assertEqual(
-            main.longest_common_subsequence_length("ABCBDAB", "BDCABA"),
-            4,
+    def test_ngram_generator_rejects_invalid_size(self) -> None:
+        with self.assertRaises(ValueError):
+            list(main.iter_ngrams("abcd", 0))
+
+    def test_cosine_similarity_known_values(self) -> None:
+        first = Counter({"a": 1, "b": 2})
+        second = Counter({"a": 1, "b": 2})
+        self.assertAlmostEqual(main.cosine_similarity(first, second), 1.0)
+        self.assertEqual(main.cosine_similarity(first, Counter({"x": 1})), 0.0)
+
+    def test_plain_text_is_not_html(self) -> None:
+        self.assertFalse(main.looks_like_html("这是一段普通论文文本。"))
+
+    def test_github_blob_html_prefers_code_lines(self) -> None:
+        html = (
+            "<!DOCTYPE html><html><body><nav>GitHub 导航</nav>"
+            '<table><tr><td id="LC1" class="blob-code js-file-line">第一行</td>'
+            '<td id="LC2" class="blob-code js-file-line">第二行</td></tr></table>'
+            "<script>无关脚本</script></body></html>"
         )
+        self.assertTrue(main.looks_like_html(html))
+        self.assertEqual(main.extract_document_text(html), "第一行\n第二行")
+
+    def test_html_parse_error_is_wrapped(self) -> None:
+        html = "<!DOCTYPE html><html><body>正文</body></html>"
+        with mock.patch.object(
+            main.DocumentHTMLParser,
+            "feed",
+            side_effect=ValueError("解析失败"),
+        ):
+            with self.assertRaises(main.InputFileError):
+                main.extract_document_text(html)
+
+    def test_cosine_similarity_handles_zero_vectors(self) -> None:
+        self.assertEqual(main.cosine_similarity(Counter({"a": 0}), Counter({"a": 1})), 0.0)
+
+    def test_html_skips_nested_noscript_and_void_tags(self) -> None:
+        html = (
+            "<!DOCTYPE html><html><body><noscript><div>隐藏内容</div></noscript>"
+            "<p>论文正文</p><br></body></html>"
+        )
+        extracted = main.extract_document_text(html)
+        self.assertIn("论文正文", extracted)
+        self.assertNotIn("隐藏内容", extracted)
+
+    def test_github_blob_html_handles_nested_and_empty_lines(self) -> None:
+        html = (
+            "<!DOCTYPE html><html><body><table><tr>"
+            '<td id="LC1" class="blob-code js-file-line"><span>第一行</span></td>'
+            '<td id="LC2" class="blob-code js-file-line"></td>'
+            '<td id="LC3" class="blob-code js-file-line">第二行<br></td>'
+            "</tr></table></body></html>"
+        )
+        self.assertEqual(main.extract_document_text(html), "第一行\n第二行")
+
+    def test_normal_html_skips_script_and_style(self) -> None:
+        html = (
+            "<!DOCTYPE html><html><head><style>页面样式</style></head>"
+            "<body><h1>论文标题</h1><p>论文正文</p>"
+            "<script>页面脚本</script></body></html>"
+        )
+        extracted = main.extract_document_text(html)
+        self.assertIn("论文标题", extracted)
+        self.assertIn("论文正文", extracted)
+        self.assertNotIn("页面样式", extracted)
+        self.assertNotIn("页面脚本", extracted)
 
 
 class CommandLineTests(unittest.TestCase):
@@ -108,7 +158,22 @@ class CommandLineTests(unittest.TestCase):
         exit_code = main.main(["main.py", str(original), str(suspect), str(answer)])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(answer.read_text(encoding="utf-8"), "0.81\n")
+        self.assertEqual(answer.read_text(encoding="utf-8"), "0.67\n")
+
+    def test_main_extracts_github_html(self) -> None:
+        html = (
+            "<!DOCTYPE html><html><body>"
+            '<td id="LC1" class="blob-code js-file-line">相同论文内容</td>'
+            "</body></html>"
+        )
+        original = self._write_text("original.txt", html)
+        suspect = self._write_text("suspect.txt", "相同论文内容")
+        answer = self.directory / "answer.txt"
+
+        exit_code = main.main(["main.py", str(original), str(suspect), str(answer)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(answer.read_text(encoding="utf-8"), "1.00\n")
 
     def test_main_rejects_wrong_argument_count(self) -> None:
         error_output = io.StringIO()
@@ -165,7 +230,7 @@ class CommandLineTests(unittest.TestCase):
             exit_code = main.main(["main.py", str(original), str(suspect), str(answer)])
 
         self.assertEqual(exit_code, 3)
-        self.assertIn("无法按 UTF-8 或 GB18030 解码", error_output.getvalue())
+        self.assertIn("无法按", error_output.getvalue())
 
     def test_main_reports_output_write_error(self) -> None:
         original = self._write_text("original.txt", "内容")

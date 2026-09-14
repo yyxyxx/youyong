@@ -1,14 +1,28 @@
 #!/usr/bin/env python3
 """论文查重程序入口。
 
-程序从命令行接收原文、抄袭版论文和答案文件三个绝对路径，
-使用最长公共子序列计算两篇文本的重复率。
+程序从命令行接收原文、抄袭版论文和答案文件三个绝对路径。
+输入既可以是普通文本，也可以是包含论文正文的 HTML 页面。
 """
 
+from __future__ import annotations
+
+import math
+import re
 import sys
 import unicodedata
+from collections import Counter
+from html.parser import HTMLParser
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Counter as CounterType
+from typing import Iterator, Sequence
+
+NGRAM_WEIGHTS = ((1, 0.35), (2, 0.45), (3, 0.20))
+TEXT_ENCODINGS = ("utf-8-sig", "gb18030")
+SKIPPED_HTML_TAGS = {"script", "style", "noscript"}
+VOID_HTML_TAGS = {"br", "hr", "img", "input", "link", "meta"}
+
+HTML_PATTERN = re.compile(r"<!doctype\s+html|<html(?:\s|>)", re.IGNORECASE)
 
 
 class PlagiarismError(Exception):
@@ -27,61 +41,147 @@ class OutputFileError(PlagiarismError):
     """答案文件无法写入。"""
 
 
+class DocumentHTMLParser(HTMLParser):
+    """从普通 HTML 或 GitHub blob 页面中提取论文正文。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skipped_depth = 0
+        self._code_line_depth = 0
+        self._code_line_parts: list[str] = []
+        self._code_lines: list[str] = []
+        self._visible_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        attributes = {name.lower(): value or "" for name, value in attrs}
+        classes = set(attributes.get("class", "").split())
+        element_id = attributes.get("id", "")
+        is_github_code_line = tag in {"td", "div"} and (
+            "js-file-line" in classes or element_id.startswith("LC")
+        )
+
+        if self._skipped_depth:
+            self._skipped_depth += 1
+            return
+        if tag in SKIPPED_HTML_TAGS:
+            self._skipped_depth = 1
+            return
+        if tag in VOID_HTML_TAGS:
+            return
+        if self._code_line_depth:
+            self._code_line_depth += 1
+            return
+        if is_github_code_line:
+            self._code_line_depth = 1
+            self._code_line_parts = []
+
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        """忽略自闭合标签，不让它影响正文提取深度。"""
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._skipped_depth:
+            self._skipped_depth -= 1
+            return
+        if self._code_line_depth:
+            self._code_line_depth -= 1
+            if self._code_line_depth == 0:
+                line = "".join(self._code_line_parts).strip()
+                if line:
+                    self._code_lines.append(line)
+
+    def handle_data(self, data: str) -> None:
+        if self._skipped_depth:
+            return
+        if self._code_line_depth:
+            self._code_line_parts.append(data)
+        else:
+            self._visible_parts.append(data)
+
+    def extracted_text(self) -> str:
+        """优先返回 GitHub 代码行，否则返回普通页面可见文字。"""
+        if self._code_lines:
+            return "\n".join(self._code_lines)
+        return "".join(self._visible_parts)
+
+
+def looks_like_html(text: str) -> bool:
+    """判断输入内容是否看起来是 HTML 文档。"""
+    return bool(HTML_PATTERN.search(text[:4096]))
+
+
+def extract_document_text(raw_text: str) -> str:
+    """从纯文本或 HTML 中提取用于查重的论文正文。"""
+    if not looks_like_html(raw_text):
+        return raw_text
+
+    parser = DocumentHTMLParser()
+    try:
+        parser.feed(raw_text)
+        parser.close()
+    except Exception as error:
+        raise InputFileError("HTML 文档解析失败") from error
+    return parser.extracted_text()
+
+
 def normalize_text(text: str) -> str:
-    """统一字符宽度、英文大小写和空白字符。
-
-    参数:
-        text: 从文件中读取的原始文本。
-
-    返回:
-        用于相似度计算的规范化文本。中文标点等非空白字符会保留。
-    """
+    """统一字符宽度和英文大小写，并去除标点、空格等非内容字符。"""
     normalized = unicodedata.normalize("NFKC", text).casefold()
-    return "".join(character for character in normalized if not character.isspace())
+    return "".join(character for character in normalized if character.isalnum())
 
 
-def longest_common_subsequence_length(left: str, right: str) -> int:
-    """使用滚动数组计算两个字符串的最长公共子序列长度。
+def iter_ngrams(text: str, size: int) -> Iterator[str]:
+    """依次生成指定长度的连续字符片段。"""
+    if size <= 0:
+        raise ValueError("n-gram 长度必须大于 0")
+    for index in range(len(text) - size + 1):
+        yield text[index : index + size]
 
-    时间复杂度为 O(len(left) * len(right))，
-    空间复杂度为 O(min(len(left), len(right)))。
-    """
-    if len(left) < len(right):
-        left, right = right, left
 
-    previous = [0] * (len(right) + 1)
-    for left_character in left:
-        current = [0] * (len(right) + 1)
-        for index, right_character in enumerate(right, start=1):
-            if left_character == right_character:
-                current[index] = previous[index - 1] + 1
-            else:
-                current[index] = max(previous[index], current[index - 1])
-        previous = current
+def cosine_similarity(
+    first_terms: CounterType[str],
+    second_terms: CounterType[str],
+) -> float:
+    """计算两个词频向量的余弦相似度。"""
+    if not first_terms or not second_terms:
+        return 0.0
 
-    return previous[-1]
+    dot_product = sum(count * second_terms.get(term, 0) for term, count in first_terms.items())
+    first_norm = math.sqrt(sum(count * count for count in first_terms.values()))
+    second_norm = math.sqrt(sum(count * count for count in second_terms.values()))
+    if first_norm == 0.0 or second_norm == 0.0:
+        return 0.0
+    return dot_product / (first_norm * second_norm)
 
 
 def calculate_similarity(original_text: str, suspect_text: str) -> float:
-    """计算两篇文本的重复率。
+    """使用字符级 1/2/3-gram 加权余弦计算重复率。
 
     公式:
-        2 * 最长公共子序列长度 / (原文长度 + 抄袭版长度)
-
-    该公式是对称的，取值范围为 [0.0, 1.0]。当两篇文本都为空时，
-    认为二者完全一致；仅有一篇为空时，认为二者没有重复内容。
+        0.35 × 1-gram 余弦 + 0.45 × 2-gram 余弦 + 0.20 × 3-gram 余弦
     """
-    original = normalize_text(original_text)
-    suspect = normalize_text(suspect_text)
+    original = normalize_text(extract_document_text(original_text))
+    suspect = normalize_text(extract_document_text(suspect_text))
 
     if not original and not suspect:
         return 1.0
     if not original or not suspect:
         return 0.0
 
-    common_length = longest_common_subsequence_length(original, suspect)
-    score = 2.0 * common_length / (len(original) + len(suspect))
-    return max(0.0, min(1.0, score))
+    weighted_score = 0.0
+    for ngram_size, weight in NGRAM_WEIGHTS:
+        original_terms = Counter(iter_ngrams(original, ngram_size))
+        suspect_terms = Counter(iter_ngrams(suspect, ngram_size))
+        weighted_score += weight * cosine_similarity(original_terms, suspect_terms)
+
+    clamped_score = max(0.0, min(1.0, weighted_score))
+    if math.isclose(clamped_score, 1.0, abs_tol=1e-12):
+        return 1.0
+    return clamped_score
 
 
 def read_text(path: Path) -> str:
@@ -89,15 +189,17 @@ def read_text(path: Path) -> str:
     if not path.is_file():
         raise InputFileError(f"输入文件不存在或不是普通文件：{path}")
 
-    try:
-        return path.read_text(encoding="utf-8-sig")
-    except UnicodeDecodeError:
+    last_error: UnicodeDecodeError | None = None
+    for encoding in TEXT_ENCODINGS:
         try:
-            return path.read_text(encoding="gb18030")
-        except (OSError, UnicodeDecodeError) as error:
-            raise InputFileError(f"文件无法按 UTF-8 或 GB18030 解码：{path}") from error
-    except OSError as error:
-        raise InputFileError(f"读取文件失败：{path}") from error
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError as error:
+            last_error = error
+        except OSError as error:
+            raise InputFileError(f"读取文件失败：{path}") from error
+
+    detail = "；".join(TEXT_ENCODINGS)
+    raise InputFileError(f"文件无法按 {detail} 解码：{path}") from last_error
 
 
 def write_score(path: Path, score: float) -> None:
@@ -108,7 +210,7 @@ def write_score(path: Path, score: float) -> None:
         raise OutputFileError(f"写入答案文件失败：{path}") from error
 
 
-def parse_arguments(arguments: Sequence[str]) -> Tuple[Path, Path, Path]:
+def parse_arguments(arguments: Sequence[str]) -> tuple[Path, Path, Path]:
     """解析并校验命令行参数。"""
     if len(arguments) != 4:
         usage = "用法：python main.py <原文文件绝对路径> <抄袭版论文绝对路径> <答案文件绝对路径>"
@@ -124,7 +226,7 @@ def parse_arguments(arguments: Sequence[str]) -> Tuple[Path, Path, Path]:
     return original_path, suspect_path, answer_path
 
 
-def main(arguments: Optional[Sequence[str]] = None) -> int:
+def main(arguments: Sequence[str] | None = None) -> int:
     """程序主入口，返回进程退出码。"""
     command_arguments = sys.argv if arguments is None else arguments
 
